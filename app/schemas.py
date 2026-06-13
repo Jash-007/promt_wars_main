@@ -101,3 +101,27 @@ class ChatResponse(BaseModel):
     content: str
     intervention_tool: Optional[str] = Field(None, description="Triggered interactive tool (e.g., box_breathing, pomodoro_sprint).")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+class UserRegister(BaseModel):
+    username: str = Field(..., min_length=3, max_length=50)
+    email: str = Field(..., description="Valid student email address.")
+    full_name: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=6)
+    exam_type: str = Field("JEE_MAIN", description="JEE_MAIN, NEET, UPSC, etc.")
+
+class UserLogin(BaseModel):
+    username_or_email: str
+    password: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    email: str
+    full_name: str
+    exam_type: str
+    created_at: datetime
+
