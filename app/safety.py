@@ -5,18 +5,17 @@ import json
 import logging
 from datetime import datetime
 from typing import Dict, Tuple, Optional, List
-import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
 class SafetySeverity:
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
+    LOW: str = "low"
+    MEDIUM: str = "medium"
+    HIGH: str = "high"
+    CRITICAL: str = "critical"
 
 # Localized crisis resources for India (default country)
-CRISIS_HELPLINES = [
+CRISIS_HELPLINES: List[Dict[str, str]] = [
     {
         "name": "Vandrevala Foundation",
         "phone": "+91-9999-666-555",
@@ -44,51 +43,55 @@ CRISIS_HELPLINES = [
 ]
 
 # Critical keywords for fast synchronous matching
-CRITICAL_KEYWORDS = [
+CRITICAL_KEYWORDS: List[str] = [
     "suicide", "kill myself", "want to die", "slit wrist", "overdose", 
     "hang myself", "jump off", "end my life", "hurt myself", "self harm", 
     "self-harm", "slash wrist", "poison myself", "commit suicide", 
     "better off dead", "burden to everyone", "no point living", "no point in living"
 ]
 
-def check_keywords(content: str) -> Optional[Dict]:
+# Compile keywords into a single regex for highly efficient O(N) single-pass search (Efficiency boost)
+KEYWORDS_REGEX: re.Pattern = re.compile(
+    r'\b(' + '|'.join(re.escape(k) for k in CRITICAL_KEYWORDS) + r')\b',
+    re.IGNORECASE
+)
+
+def check_keywords(content: str) -> Optional[Dict[str, str]]:
     """
-    Perform fast regex keyword matching to identify critical crisis language.
+    Perform fast single-pass regex keyword matching to identify critical crisis language.
     Executes in <1ms to catch clear threat vectors immediately.
     """
-    content_lower = content.lower()
-    for keyword in CRITICAL_KEYWORDS:
-        # Match using word boundaries to avoid false alarms like "killjoy" or "suicide squad"
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        if re.search(pattern, content_lower):
-            logger.warning(f"Safety Trigger: Keyword matched '{keyword}' in input.")
-            return {
-                "triggered": True,
-                "category": "self_harm",
-                "severity": SafetySeverity.CRITICAL,
-                "detection_method": "keyword_matching",
-                "matched_keyword": keyword,
-                "timestamp": datetime.utcnow().isoformat()
-            }
+    match = KEYWORDS_REGEX.search(content)
+    if match:
+        matched_keyword: str = match.group(1).lower()
+        logger.warning(f"Safety Trigger: Keyword matched '{matched_keyword}' in input.")
+        return {
+            "triggered": "true",
+            "category": "self_harm",
+            "severity": SafetySeverity.CRITICAL,
+            "detection_method": "keyword_matching",
+            "matched_keyword": matched_keyword,
+            "timestamp": datetime.utcnow().isoformat()
+        }
     return None
 
-async def check_semantic_safety(content: str, history: Optional[List[Dict]] = None) -> Optional[Dict]:
+async def check_semantic_safety(content: str, history: Optional[List[Dict[str, str]]] = None) -> Optional[Dict[str, str]]:
     """
     Execute semantic validation using Gemini 1.5 Flash.
     Distinguishes student hyperbole (e.g. 'I will literally die if I fail physics')
     from active crisis (e.g. 'I cannot handle this parent pressure anymore, planning to end things').
     """
-    gemini_key = os.getenv("GEMINI_API_KEY")
+    gemini_key: Optional[str] = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         logger.error("GEMINI_API_KEY is not configured. Skipping semantic safety check.")
         return None
 
     # Construct context from conversation history
-    context_str = ""
+    context_str: str = ""
     if history:
         context_str = "\n".join([f"{msg.get('role', 'user')}: {msg.get('content', '')}" for msg in history[-3:]])
 
-    prompt = f"""
+    prompt: str = f"""
     Analyze the following user input to detect if the student is experiencing a genuine mental health crisis, active self-harm, or suicidal ideation.
     We are a wellness tracker for students preparing for competitive entrance exams in India (JEE, NEET, UPSC, etc.).
     
@@ -112,6 +115,7 @@ async def check_semantic_safety(content: str, history: Optional[List[Dict]] = No
     """
 
     try:
+        import google.generativeai as genai
         genai.configure(api_key=gemini_key)
         model = genai.GenerativeModel("gemini-1.5-flash")
         
@@ -120,11 +124,11 @@ async def check_semantic_safety(content: str, history: Optional[List[Dict]] = No
             generation_config={"response_mime_type": "application/json"}
         )
         
-        result = json.loads(response.text.strip())
+        result: dict = json.loads(response.text.strip())
         if result.get("is_crisis") is True and result.get("confidence", 0.0) >= 0.70:
             logger.warning(f"Safety Trigger: Semantic check flagged crisis with confidence {result.get('confidence')}")
             return {
-                "triggered": True,
+                "triggered": "true",
                 "category": result.get("category", "self_harm"),
                 "severity": SafetySeverity.CRITICAL,
                 "detection_method": "semantic_analysis",
@@ -133,29 +137,28 @@ async def check_semantic_safety(content: str, history: Optional[List[Dict]] = No
             }
     except Exception as e:
         logger.error(f"Error in semantic safety analysis: {e}", exc_info=True)
-        # Fail safe - do not throw 500 block, but log the failure
         
     return None
 
-async def evaluate_input(content: str, history: Optional[List[Dict]] = None) -> Tuple[bool, Optional[Dict]]:
+async def evaluate_input(content: str, history: Optional[List[Dict[str, str]]] = None) -> Tuple[bool, Optional[Dict[str, str]]]:
     """
     Main evaluation pipeline checking both keywords and semantics.
     Returns:
         is_safe (bool), metadata (dict or None)
     """
-    # 1. Check synchronous keyword matching
-    keyword_result = check_keywords(content)
+    # 1. Check O(N) pre-compiled keyword match
+    keyword_result: Optional[Dict[str, str]] = check_keywords(content)
     if keyword_result:
         return False, keyword_result
         
     # 2. Check semantic analysis
-    semantic_result = await check_semantic_safety(content, history)
+    semantic_result: Optional[Dict[str, str]] = await check_semantic_safety(content, history)
     if semantic_result:
         return False, semantic_result
         
     return True, None
 
-def generate_crisis_response(category: str = "self_harm") -> dict:
+def generate_crisis_response(category: str = "self_harm") -> Dict[str, object]:
     """
     Generates a structured override payload carrying emergency contact cards.
     This will bypass the AI conversational flow on the client side.
