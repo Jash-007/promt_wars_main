@@ -50,7 +50,7 @@ CRITICAL_KEYWORDS: List[str] = [
     "better off dead", "burden to everyone", "no point living", "no point in living"
 ]
 
-# Compile keywords into a single regex for highly efficient O(N) single-pass search (Efficiency boost)
+# Compile keywords into a single regex for highly efficient O(N) single-pass search
 KEYWORDS_REGEX: re.Pattern = re.compile(
     r'\b(' + '|'.join(re.escape(k) for k in CRITICAL_KEYWORDS) + r')\b',
     re.IGNORECASE
@@ -77,9 +77,8 @@ def check_keywords(content: str) -> Optional[Dict[str, str]]:
 
 async def check_semantic_safety(content: str, history: Optional[List[Dict[str, str]]] = None) -> Optional[Dict[str, str]]:
     """
-    Execute semantic validation using Gemini 1.5 Flash.
-    Distinguishes student hyperbole (e.g. 'I will literally die if I fail physics')
-    from active crisis (e.g. 'I cannot handle this parent pressure anymore, planning to end things').
+    Execute semantic validation using Gemini.
+    Compatible with both the deprecated 'google.generativeai' and the newer 'google.genai' SDKs.
     """
     gemini_key: Optional[str] = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
@@ -115,16 +114,33 @@ async def check_semantic_safety(content: str, history: Optional[List[Dict[str, s
     """
 
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
-        result: dict = json.loads(response.text.strip())
+        result_text: str = ""
+        # 1. Try importing new google-genai SDK first
+        try:
+            from google import genai
+            from google.genai import types
+            
+            client = genai.Client(api_key=gemini_key)
+            response = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
+            )
+            result_text = response.text
+        except ImportError:
+            # 2. Fall back to deprecated google-generativeai SDK
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(
+                prompt,
+                generation_config={"response_mime_type": "application/json"}
+            )
+            result_text = response.text
+            
+        result: dict = json.loads(result_text.strip())
         if result.get("is_crisis") is True and result.get("confidence", 0.0) >= 0.70:
             logger.warning(f"Safety Trigger: Semantic check flagged crisis with confidence {result.get('confidence')}")
             return {

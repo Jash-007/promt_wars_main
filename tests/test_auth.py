@@ -1,13 +1,12 @@
 # backend/tests/test_auth.py
 import pytest
 from datetime import timedelta
-from jose import jwt
 from app.auth import (
     hash_password,
     verify_password,
     create_access_token,
-    SECRET_KEY,
-    ALGORITHM
+    custom_jwt_decode,
+    SECRET_KEY
 )
 
 def test_password_hashing():
@@ -26,7 +25,7 @@ def test_jwt_token_generation():
     payload = {"sub": "aspirant_test"}
     token = create_access_token(payload, expires_delta=timedelta(minutes=5))
     
-    # Decode token and assert payload
-    decoded = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    # Decode token using custom pure-Python decoder
+    decoded = custom_jwt_decode(token, SECRET_KEY)
     assert decoded["sub"] == "aspirant_test"
     assert "exp" in decoded

@@ -2,12 +2,9 @@
 import os
 import logging
 from typing import AsyncGenerator, List, Dict, Optional, Tuple
-import google.generativeai as genai
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-# Constants for default system instruction
 DEFAULT_SYSTEM_INSTRUCTION = """
 You are StressFreak, an invisible, empathetic digital companion designed specifically for Indian exam aspirants (15-25 years old) preparing for competitive exams (JEE, NEET, UPSC, etc.).
 
@@ -28,12 +25,20 @@ STRESS VECTOR DIRECTIVE:
 4. MOCK TEST SLUMP: Debug what failed (time, content, anxiety) as a fixable metric.
 """
 
+# In-memory system prompt cache to optimize disk operations (Efficiency boost)
+PROMPT_CACHE: Optional[str] = None
+
 def load_system_prompt() -> str:
     """
     Attempts to read EMPATHETIC_AGENT_SYSTEM_PROMPT.md from workspace.
-    Falls back to a default system instruction if file is missing.
+    Uses memory cache to avoid redundant filesystem read/write lookups.
     """
+    global PROMPT_CACHE
+    if PROMPT_CACHE:
+        return PROMPT_CACHE
+
     paths_to_try = [
+        "/app/MainChallange/EMPATHETIC_AGENT_SYSTEM_PROMPT.md",
         "/Promptwars/MainChallange/EMPATHETIC_AGENT_SYSTEM_PROMPT.md",
         "d:/Promptwars/MainChallange/EMPATHETIC_AGENT_SYSTEM_PROMPT.md",
         "MainChallange/EMPATHETIC_AGENT_SYSTEM_PROMPT.md",
@@ -46,10 +51,12 @@ def load_system_prompt() -> str:
                     content = f.read()
                     if "EMPATHETIC AGENT SYSTEM PROMPT" in content:
                         logger.info(f"Successfully loaded system prompt from {path}")
+                        PROMPT_CACHE = content
                         return content
         except Exception:
             pass
     logger.warning("Could not locate system prompt file. Using default inline configuration.")
+    PROMPT_CACHE = DEFAULT_SYSTEM_INSTRUCTION
     return DEFAULT_SYSTEM_INSTRUCTION
 
 def evaluate_intervention_tool(message: str) -> Optional[str]:
@@ -87,8 +94,8 @@ async def stream_empathetic_chat(
     exam_type: str = "JEE_MAIN"
 ) -> AsyncGenerator[str, None]:
     """
-    Asynchronously calls Gemini 1.5 Flash with the detailed student persona prompt
-    and yields streaming text response chunks.
+    Asynchronously calls Gemini with the detailed student persona prompt
+    and yields streaming text response chunks. Compatible with both google-generativeai and google-genai.
     """
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
@@ -96,47 +103,64 @@ async def stream_empathetic_chat(
         yield "[System Error: Gemini API Key is missing. Empathic response could not be generated.]"
         return
 
-    # Load prompt and insert student context
     system_prompt_base = load_system_prompt()
-    system_instruction = f"""
-    {system_prompt_base}
-    
-    Active Student Profile Context:
-    - Target Exam: {exam_type}
-    """
+    system_instruction = f"{system_prompt_base}\n\nActive Student Profile Context:\n- Target Exam: {exam_type}"
 
     try:
-        genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            system_instruction=system_instruction
-        )
-
-        # Map history role syntax (Gemini uses 'user' and 'model')
-        contents = []
-        for msg in history:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        # 1. Try importing and utilizing the new google-genai SDK
+        try:
+            from google import genai
+            from google.genai import types
             
-        # Add current turn
-        contents.append({"role": "user", "parts": [{"text": current_message}]})
+            client = genai.Client(api_key=gemini_key)
+            
+            contents = []
+            for msg in history:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append(types.Content(role=role, parts=[types.Part.from_text(text=msg["content"])]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=current_message)]))
+            
+            # Using new models.generate_content_stream API
+            response = client.models.generate_content_stream(
+                model="gemini-1.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    temperature=0.7,
+                    max_output_tokens=500,
+                    top_p=0.85
+                )
+            )
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+                    
+        except ImportError:
+            # 2. Fall back to deprecated google-generativeai SDK
+            import google.generativeai as genai
+            genai.configure(api_key=gemini_key)
+            model = genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system_instruction
+            )
+            contents = []
+            for msg in history:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+            contents.append({"role": "user", "parts": [{"text": current_message}]})
 
-        # Run stream with optimized generation config
-        generation_config = {
-            "temperature": 0.7,
-            "max_output_tokens": 500,
-            "top_p": 0.85
-        }
-        
-        response = model.generate_content(
-            contents,
-            stream=True,
-            generation_config=generation_config
-        )
-
-        for chunk in response:
-            if chunk.text:
-                yield chunk.text
+            response = model.generate_content(
+                contents,
+                stream=True,
+                generation_config={
+                    "temperature": 0.7,
+                    "max_output_tokens": 500,
+                    "top_p": 0.85
+                }
+            )
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
 
     except Exception as e:
         logger.error(f"Error executing Gemini stream: {e}", exc_info=True)
